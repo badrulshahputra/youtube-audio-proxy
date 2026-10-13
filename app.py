@@ -3,14 +3,18 @@ import yt_dlp
 
 app = FastAPI(title="YouTube Audio Stream Proxy for ESP32")
 
-# Konfigurasi yt-dlp untuk ekstrak audio terpantas & terbaik
+# Konfigurasi extractor_args Android/iOS untuk melepasi sekatan bot pelayan awan
 YDL_OPTIONS = {
     'format': 'bestaudio[ext=m4a]/bestaudio/best',
     'noplaylist': True,
     'quiet': True,
     'default_search': 'ytsearch1:',
-    'extract_flat': False,
-    'socket_timeout': 10,
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android', 'ios']
+        }
+    },
+    'socket_timeout': 15,
 }
 
 @app.get("/")
@@ -28,7 +32,6 @@ def get_audio_stream(q: str = Query(..., description="Kata kunci carian lagu")):
 
     try:
         with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
-            # Cari lagu pertama di YouTube
             search_query = f"ytsearch1:{q.strip()}"
             info = ydl.extract_info(search_query, download=False)
 
@@ -36,6 +39,13 @@ def get_audio_stream(q: str = Query(..., description="Kata kunci carian lagu")):
                 video = info['entries'][0]
                 audio_url = video.get('url')
                 title = video.get('title', q)
+
+                # Jika direct url berada dalam senarai formats
+                if not audio_url and 'formats' in video:
+                    for f in reversed(video['formats']):
+                        if f.get('acodec') != 'none' and f.get('url'):
+                            audio_url = f.get('url')
+                            break
 
                 if audio_url:
                     return {
