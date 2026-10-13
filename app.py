@@ -64,25 +64,7 @@ def get_audio_stream(q: str = Query(..., description="Kata kunci carian lagu")):
 
     query = q.strip()
 
-    # --- Fasa 1: Cuba cari di YouTube dahulu ---
-    try:
-        with yt_dlp.YoutubeDL(YOUTUBE_OPTS) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
-            if 'entries' in info and len(info['entries']) > 0:
-                video = info['entries'][0]
-                audio_url = extract_direct_stream(video)
-                title = video.get('title', query)
-                if audio_url and 'm3u8' not in audio_url:
-                    return {
-                        "status": "success",
-                        "source": "youtube",
-                        "title": title,
-                        "url": audio_url
-                    }
-    except Exception as yt_err:
-        print(f"[LOG] YouTube extractor: {yt_err}. Mengaktifkan SoundCloud...")
-
-    # --- Fasa 2: Sandaran Automatik ke SoundCloud (Direct MP3) ---
+    # --- Fasa 1: Cari di SoundCloud dahulu (Sangat Pantas ~1.5 saat & Direct MP3 128kbps) ---
     try:
         with yt_dlp.YoutubeDL(SC_OPTS) as ydl:
             info = ydl.extract_info(f"scsearch1:{query}", download=False)
@@ -91,6 +73,7 @@ def get_audio_stream(q: str = Query(..., description="Kata kunci carian lagu")):
                 audio_url = extract_direct_stream(track)
                 title = track.get('title', query)
                 if audio_url:
+                    print(f"[LOG] Jumpa di SoundCloud: {title}")
                     return {
                         "status": "success",
                         "source": "soundcloud",
@@ -98,6 +81,25 @@ def get_audio_stream(q: str = Query(..., description="Kata kunci carian lagu")):
                         "url": audio_url
                     }
     except Exception as sc_err:
-        print(f"[LOG] SoundCloud extractor: {sc_err}")
+        print(f"[LOG] SoundCloud extractor: {sc_err}. Cuba YouTube...")
+
+    # --- Fasa 2: Sandaran ke YouTube jika tiada di SoundCloud ---
+    try:
+        with yt_dlp.YoutubeDL(YOUTUBE_OPTS) as ydl:
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            if 'entries' in info and len(info['entries']) > 0:
+                video = info['entries'][0]
+                audio_url = extract_direct_stream(video)
+                title = video.get('title', query)
+                if audio_url:
+                    print(f"[LOG] Jumpa di YouTube: {title}")
+                    return {
+                        "status": "success",
+                        "source": "youtube",
+                        "title": title,
+                        "url": audio_url
+                    }
+    except Exception as yt_err:
+        print(f"[LOG] YouTube extractor: {yt_err}")
 
     raise HTTPException(status_code=404, detail="Lagu tidak ditemui")
