@@ -3,52 +3,74 @@ import yt_dlp
 
 app = FastAPI(title="Music Audio Stream Proxy for ESP32")
 
-# 1. Konfigurasi SoundCloud (Keutamaan Utama: Sangat Pantas ~1.5 saat & Direct 128kbps MP3)
+# 1. Konfigurasi SoundCloud (Pantas ~1.5 - 3 saat & 100% Direct 128kbps MP3 Penuh)
 SC_OPTS = {
     'format': 'http_mp3/bestaudio[protocol=http]/bestaudio[protocol=https]',
     'noplaylist': True,
     'quiet': True,
-    'default_search': 'scsearch1:',
-    'socket_timeout': 12,
+    'socket_timeout': 10,
+    'ignoreerrors': True,
 }
 
-# 2. Konfigurasi YouTube (Sandaran jika tiada di SoundCloud)
+# 2. Konfigurasi YouTube (Sandaran)
 YOUTUBE_OPTS = {
     'format': 'bestaudio[ext=m4a]/bestaudio/best',
     'noplaylist': True,
     'quiet': True,
-    'default_search': 'ytsearch1:',
+    'socket_timeout': 12,
+    'ignoreerrors': True,
     'extractor_args': {
         'youtube': {
-            'player_client': ['android', 'mweb']
+            'player_client': ['android', 'ios', 'mweb']
         }
     },
-    'socket_timeout': 15,
 }
 
+def is_valid_full_stream(url: str, duration: float = 0) -> bool:
+    """Tapis keluar playlist .m3u8 dan fail preview/sample 30 saat SoundCloud"""
+    if not url:
+        return False
+    if 'm3u8' in url:
+        return False
+    # Tapis preview/sample 30 saat
+    if 'preview' in url.lower() or 'cf-preview-media' in url:
+        return False
+    if duration and duration < 45:
+        return False
+    return True
+
 def extract_direct_stream(entry):
-    """Mencari pautan stream terus yang BUKAN playlist .m3u8 (Pantas, stabil & elak crash ESP32)"""
-    # 1. Pautan yang dipilih yt-dlp secara automatik (Direct MP3)
+    """Mencari pautan stream MP3/audio PENUH (Bukan preview 30s & Bukan .m3u8)"""
+    if not entry:
+        return None
+
+    duration = entry.get('duration', 0)
+    # Jika trek adalah sampel di bawah 45 saat, tolak terus trek ini
+    if duration and duration < 45:
+        return None
+
+    # 1. Semak url utama jika direct mp3 penuh
     main_url = entry.get('url', '')
-    if main_url and 'm3u8' not in main_url and ('.128.mp3' in main_url or '.mp3' in main_url):
-        return main_url
+    if main_url and is_valid_full_stream(main_url, duration):
+        if '.128.mp3' in main_url or '.mp3' in main_url:
+            return main_url
 
     formats = entry.get('formats', [])
-    # 2. Cari format http_mp3 secara spesifik
+    # 2. Cari format http_mp3 secara spesifik yang sah & penuh
     for f in formats:
         fid = f.get('format_id', '')
         furl = f.get('url', '')
-        if 'http_mp3' in fid and furl and 'm3u8' not in furl:
+        if 'http_mp3' in fid and is_valid_full_stream(furl, duration):
             return furl
 
-    # 3. Cari sebarang direct non-m3u8 stream
+    # 3. Cari sebarang direct non-m3u8 & non-preview stream
     for f in formats:
         furl = f.get('url', '')
         proto = f.get('protocol', '')
-        if furl and 'm3u8' not in furl and 'm3u8' not in proto:
+        if furl and 'm3u8' not in proto and is_valid_full_stream(furl, duration):
             return furl
 
-    return main_url
+    return None
 
 @app.get("/")
 def home():
@@ -65,16 +87,19 @@ def get_audio_stream(q: str = Query(..., description="Kata kunci carian lagu")):
 
     query = q.strip()
 
-    # --- Fasa 1: Cari di SoundCloud dahulu (Pantas ~1.5 saat & 100% Direct MP3) ---
+    # --- Fasa 1: Cari di SoundCloud (Imbas 5 trek, abaikan DRM & tolak preview 30s) ---
     try:
         with yt_dlp.YoutubeDL(SC_OPTS) as ydl:
-            info = ydl.extract_info(f"scsearch1:{query}", download=False)
-            if 'entries' in info and len(info['entries']) > 0:
-                track = info['entries'][0]
+            info = ydl.extract_info(f"scsearch5:{query}", download=False)
+            entries = info.get('entries', []) if info else []
+            for track in entries:
+                if not track:
+                    continue
                 audio_url = extract_direct_stream(track)
-                title = track.get('title', query)
                 if audio_url:
-                    print(f"[LOG] Jumpa di SoundCloud: {title}")
+                    title = track.get('title', query)
+                    duration = track.get('duration', 0)
+                    print(f"[LOG] Jumpa Lagu Penuh di SoundCloud: {title} (Durasi: {duration}s)")
                     return {
                         "status": "success",
                         "source": "soundcloud",
@@ -84,16 +109,19 @@ def get_audio_stream(q: str = Query(..., description="Kata kunci carian lagu")):
     except Exception as sc_err:
         print(f"[LOG] SoundCloud extractor: {sc_err}. Cuba YouTube...")
 
-    # --- Fasa 2: Sandaran ke YouTube jika tiada di SoundCloud ---
+    # --- Fasa 2: Sandaran ke YouTube jika tiada lagu penuh di SoundCloud ---
     try:
         with yt_dlp.YoutubeDL(YOUTUBE_OPTS) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
-            if 'entries' in info and len(info['entries']) > 0:
-                video = info['entries'][0]
+            info = ydl.extract_info(f"ytsearch3:{query}", download=False)
+            entries = info.get('entries', []) if info else []
+            for video in entries:
+                if not video:
+                    continue
                 audio_url = extract_direct_stream(video)
-                title = video.get('title', query)
                 if audio_url:
-                    print(f"[LOG] Jumpa di YouTube: {title}")
+                    title = video.get('title', query)
+                    duration = video.get('duration', 0)
+                    print(f"[LOG] Jumpa Lagu Penuh di YouTube: {title} (Durasi: {duration}s)")
                     return {
                         "status": "success",
                         "source": "youtube",
@@ -103,4 +131,4 @@ def get_audio_stream(q: str = Query(..., description="Kata kunci carian lagu")):
     except Exception as yt_err:
         print(f"[LOG] YouTube extractor: {yt_err}")
 
-    raise HTTPException(status_code=404, detail="Lagu tidak ditemui")
+    raise HTTPException(status_code=404, detail="Lagu penuh tidak ditemui")
