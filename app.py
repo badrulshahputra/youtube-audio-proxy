@@ -3,7 +3,16 @@ import yt_dlp
 
 app = FastAPI(title="Music Audio Stream Proxy for ESP32")
 
-# 1. Konfigurasi YouTube (Android + Mweb)
+# 1. Konfigurasi SoundCloud (Keutamaan Utama: Sangat Pantas ~1.5 saat & Direct 128kbps MP3)
+SC_OPTS = {
+    'format': 'http_mp3/bestaudio[protocol=http]/bestaudio[protocol=https]',
+    'noplaylist': True,
+    'quiet': True,
+    'default_search': 'scsearch1:',
+    'socket_timeout': 12,
+}
+
+# 2. Konfigurasi YouTube (Sandaran jika tiada di SoundCloud)
 YOUTUBE_OPTS = {
     'format': 'bestaudio[ext=m4a]/bestaudio/best',
     'noplaylist': True,
@@ -17,37 +26,29 @@ YOUTUBE_OPTS = {
     'socket_timeout': 15,
 }
 
-# 2. Konfigurasi SoundCloud (Sandaran Direct 128kbps MP3)
-SC_OPTS = {
-    'format': 'http_mp3/bestaudio[protocol=http]/bestaudio[protocol=https]/bestaudio',
-    'noplaylist': True,
-    'quiet': True,
-    'default_search': 'scsearch1:',
-    'socket_timeout': 12,
-}
-
 def extract_direct_stream(entry):
-    """Mencari pautan stream terus yang BUKAN playlist .m3u8 (Pantas & serasi ESP32 / Browser)"""
+    """Mencari pautan stream terus yang BUKAN playlist .m3u8 (Pantas, stabil & elak crash ESP32)"""
+    # 1. Pautan yang dipilih yt-dlp secara automatik (Direct MP3)
+    main_url = entry.get('url', '')
+    if main_url and 'm3u8' not in main_url and ('.128.mp3' in main_url or '.mp3' in main_url):
+        return main_url
+
     formats = entry.get('formats', [])
-    # 1. Keutamaan: Audio-only direct stream (cth: .128.mp3 atau audio googlevideo)
-    for f in reversed(formats):
-        proto = f.get('protocol', '')
-        url = f.get('url', '')
-        acodec = f.get('acodec', 'none')
-        vcodec = f.get('vcodec', 'none')
-        if url and acodec != 'none' and vcodec == 'none' and 'm3u8' not in proto and 'm3u8' not in url:
-            return url
+    # 2. Cari format http_mp3 secara spesifik
+    for f in formats:
+        fid = f.get('format_id', '')
+        furl = f.get('url', '')
+        if 'http_mp3' in fid and furl and 'm3u8' not in furl:
+            return furl
 
-    # 2. Pilihan kedua: Sebarang direct stream bukan m3u8
-    for f in reversed(formats):
+    # 3. Cari sebarang direct non-m3u8 stream
+    for f in formats:
+        furl = f.get('url', '')
         proto = f.get('protocol', '')
-        url = f.get('url', '')
-        acodec = f.get('acodec', 'none')
-        if url and acodec != 'none' and 'm3u8' not in proto and 'm3u8' not in url:
-            return url
+        if furl and 'm3u8' not in furl and 'm3u8' not in proto:
+            return furl
 
-    # 3. Fallback jika tiada direct format
-    return entry.get('url')
+    return main_url
 
 @app.get("/")
 def home():
@@ -64,7 +65,7 @@ def get_audio_stream(q: str = Query(..., description="Kata kunci carian lagu")):
 
     query = q.strip()
 
-    # --- Fasa 1: Cari di SoundCloud dahulu (Sangat Pantas ~1.5 saat & Direct MP3 128kbps) ---
+    # --- Fasa 1: Cari di SoundCloud dahulu (Pantas ~1.5 saat & 100% Direct MP3) ---
     try:
         with yt_dlp.YoutubeDL(SC_OPTS) as ydl:
             info = ydl.extract_info(f"scsearch1:{query}", download=False)
